@@ -1,0 +1,75 @@
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+import asyncio
+import re
+from flask import Flask
+import threading
+import os
+
+api_id = 37868561
+api_hash = 'c572dbecd109072ab7ef2935d265b0d8'
+
+with open('session_string.txt', 'r') as f:
+    session_string = f.read().strip()
+
+client = TelegramClient(StringSession(session_string), api_id, api_hash)
+
+TARGETS = ['mrktnotification', 'portals_notifications', 'mrktbank', 'giftstoportals']
+KEYWORDS = ['upgrade', 'улучшен', 'upgraded', 'new listing', 'выставлен', 'listed', 'sold', 'продан', 'gift', 'подарок', 'nft']
+last_ids = {}
+
+app = Flask(__name__)
+
+@app.route('/')
+@app.route('/health')
+def health():
+    return 'OK', 200
+
+def run_flask():
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
+
+async def main():
+    await client.start()
+    me = await client.get_me()
+    print(f'✅ Подключён как: @{me.username} (id: {me.id})')
+
+    for t in TARGETS:
+        try:
+            entity = await client.get_entity('@' + t)
+            last = await client.get_messages(entity, limit=1)
+            last_ids[t] = last[0].id if last else 0
+            print(f'✅ Подписан на @{t}')
+        except Exception as e:
+            print(f'❌ Ошибка с @{t}: {e}')
+
+    print('🚀 Парсер запущен. Слежу за новыми лотами...')
+    while True:
+        for t in TARGETS:
+            try:
+                entity = await client.get_entity('@' + t)
+                messages = await client.get_messages(entity, limit=5)
+                for msg in messages:
+                    if msg.id > last_ids.get(t, 0):
+                        last_ids[t] = msg.id
+                        if msg.text:
+                            process_message(msg.text, t)
+            except Exception as e:
+                print(f'Ошибка при чтении @{t}: {e}')
+        await asyncio.sleep(20)
+
+def process_message(text, source):
+    if not any(kw.lower() in text.lower() for kw in KEYWORDS):
+        return
+    price_match = re.search(r'([\d.]+)\s*\**\s*(TON|GRAM|USDT|BTC|ETH)', text, re.IGNORECASE)
+    price = price_match.group(1) if price_match else '?'
+    currency = price_match.group(2).upper() if price_match else ''
+    print(f'\n🎁 НОВОЕ СОБЫТИЕ!')
+    print(f'📢 Источник: @{source}')
+    print(f'💰 Цена: {price} {currency}')
+    print(f'📄 Текст: {text[:250]}...')
+    print('-' * 40)
+
+if __name__ == '__main__':
+    threading.Thread(target=run_flask, daemon=True).start()
+    asyncio.run(main())
